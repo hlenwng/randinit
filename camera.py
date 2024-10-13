@@ -2,268 +2,151 @@ import cv2
 import apriltag
 import json
 import numpy as np
-import tkinter as tk
-import threading
-import queue
-from PIL import Image, ImageTk
 
-class App:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("AprilTag Detection with Resizable Box")
-        self.canvas = tk.Canvas(root, width=800, height=600, bg='white')
-        self.canvas.pack()
+#Get pose estimation of AprilTag
+tag_size = 0.06  #6 cm square
 
-        self.box = None
-        self.corners = []
-        self.start_x = None
-        self.start_y = None
-        self.dragging_corner = None
+#Store IRL coordinates of tag corners
+obj_points = np.array([
+    [-tag_size / 2, -tag_size / 2, 0],
+    [tag_size / 2, -tag_size / 2, 0],
+    [tag_size / 2, tag_size / 2, 0],
+    [-tag_size / 2, tag_size / 2, 0]
+], dtype=np.float32)
 
-        self.canvas.bind('<Button-1>', self.start_box)
-        self.canvas.bind('<B1-Motion>', self.update_box)
-        self.canvas.bind('<ButtonRelease-1>', self.finalize_box)
+#Load camera intrinsics from a given JSON file
+try:
+    with open('camera_intrinsics.json') as f:
+        intrinsics = json.load(f)
+except FileNotFoundError:
+    print("Error: camera_intrinsics.json file not found.")
+    exit(1)
 
-        # Load camera intrinsics
-        self.load_camera_intrinsics()
+if 'camera_matrix' not in intrinsics or 'distortion_coefficients' not in intrinsics:
+    print("Error: Missing camera intrinsics in JSON.")
+    exit(1)
 
-        # Initialize frame queue and video thread
-        self.frame_queue = queue.Queue()
-        self.running = True
-        self.video_thread = threading.Thread(target=self.start_video_capture)
-        self.video_thread.start()
+camera_matrix = np.array(intrinsics['camera_matrix'], dtype=np.float32)
+dist_coeffs = np.array(intrinsics['distortion_coefficients'], dtype=np.float32)
 
-        # Start the frame update loop
-        self.update_frame()
+#Initialize AprilTag detector
+options = apriltag.DetectorOptions(families='tag36h11')
+detector = apriltag.Detector(options)
 
-    def start_box(self, event):
-        if self.box is None:
-            self.start_x = event.x
-            self.start_y = event.y
-            self.box = self.canvas.create_rectangle(self.start_x, self.start_y, self.start_x, self.start_y, outline='blue')
-            self.create_corners()
-        else:
-            # Check if the click is on a corner
-            for corner in self.corners:
-                if self.canvas.find_withtag(tk.CURRENT) == corner:
-                    self.start_resize(event)
-                    return
+cap = cv2.VideoCapture(0)
 
-    def update_box(self, event):
-        if self.box and not self.dragging_corner:
-            self.canvas.coords(self.box, self.start_x, self.start_y, event.x, event.y)
-            self.update_corners()
+if not cap.isOpened():
+    print("Error: Could not open camera.")
+    exit(1)
 
-    def finalize_box(self, event):
-        if self.box:
-            x1, y1, x2, y2 = self.canvas.coords(self.box)
-            print(f"Final box coordinates: ({x1}, {y1}, {x2}, {y2})")
-            # Store the final coordinates as needed
-        self.dragging_corner = None
+#Create interactive bounding box
+drawing = False  #True if mouse is pressed
+ix, iy = -1, -1  #Initial position of box
+box_coords = None  #Box coordinates
+final_box_coords = None  #Final box coordinates after button click
+scale_factor = 0.01  #Default scaling factor
 
-    def create_corners(self):
-        if self.box:
-            x1, y1, x2, y2 = self.canvas.coords(self.box)
-            self.corners = [
-                self.canvas.create_rectangle(x1-5, y1-5, x1+5, y1+5, fill='red'),  # Top-left
-                self.canvas.create_rectangle(x2-5, y1-5, x2+5, y1+5, fill='red'),  # Top-right
-                self.canvas.create_rectangle(x1-5, y2-5, x1+5, y2+5, fill='red'),  # Bottom-left
-                self.canvas.create_rectangle(x2-5, y2-5, x2+5, y2+5, fill='red')   # Bottom-right
-            ]
-            for corner in self.corners:
-                self.canvas.tag_bind(corner, '<Button-1>', self.start_resize)
-                self.canvas.tag_bind(corner, '<B1-Motion>', self.do_resize)
-                self.canvas.tag_bind(corner, '<ButtonRelease-1>', self.end_resize)
+def draw_box(event, x_mouse, y_mouse, flags, param):
+    global ix, iy, drawing, box_coords
+    
+    if event == cv2.EVENT_LBUTTONDOWN:
+        drawing = True
+        ix, iy = x_mouse, y_mouse
+        box_coords = [(ix, iy), (ix, iy)]  #Start coordinates of the box
 
-    def update_corners(self):
-        if self.box:
-            x1, y1, x2, y2 = self.canvas.coords(self.box)
-            self.canvas.coords(self.corners[0], x1-5, y1-5, x1+5, y1+5)
-            self.canvas.coords(self.corners[1], x2-5, y1-5, x2+5, y1+5)
-            self.canvas.coords(self.corners[2], x1-5, y2-5, x1+5, y2+5)
-            self.canvas.coords(self.corners[3], x2-5, y2-5, x2+5, y2+5)
+    elif event == cv2.EVENT_MOUSEMOVE:
+        if drawing:
+            box_coords[1] = (x_mouse, y_mouse)  #Update the box's end coordinates
 
-    def start_resize(self, event):
-        self.dragging_corner = event.widget.find_closest(event.x, event.y)[0]
+    elif event == cv2.EVENT_LBUTTONUP:
+        drawing = False
+        box_coords[1] = (x_mouse, y_mouse)  #Finalize the box's end coordinates
 
-    def do_resize(self, event):
-        if self.dragging_corner:
-            x1, y1, x2, y2 = self.canvas.coords(self.box)
-            if self.dragging_corner == self.corners[0]:
-                self.canvas.coords(self.box, event.x, event.y, x2, y2)
-            elif self.dragging_corner == self.corners[1]:
-                self.canvas.coords(self.box, x1, event.y, event.x, y2)
-            elif self.dragging_corner == self.corners[2]:
-                self.canvas.coords(self.box, event.x, y1, x2, event.y)
-            elif self.dragging_corner == self.corners[3]:
-                self.canvas.coords(self.box, x1, y1, event.x, event.y)
-            self.update_corners()
+#Create window
+cv2.namedWindow('April Tag Detection', cv2.WINDOW_GUI_EXPANDED)
+cv2.setMouseCallback('April Tag Detection', draw_box)
 
-    def end_resize(self, event):
-        self.dragging_corner = None
+#Open camera
+while cap.isOpened():
+    ret, frame = cap.read()
+    if not ret:
+        print("Error: Could not read frame.")
+        break
 
-    def load_camera_intrinsics(self):
-        # Placeholder for loading camera intrinsics
-        try:
-            with open('camera_intrinsics.json') as f:
-                intrinsics = json.load(f)
-            print("Loaded intrinsics:", intrinsics)
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-            if 'camera_matrix' not in intrinsics or 'distortion_coefficients' not in intrinsics:
-                print("Error: Missing camera intrinsics in JSON.")
-                exit(1)
+    #Detect AprilTags
+    detections = detector.detect(gray)
 
-            self.camera_matrix = np.array(intrinsics['camera_matrix'], dtype=np.float32)
-            self.dist_coeffs = np.array(intrinsics['distortion_coefficients'], dtype=np.float32)
-        except FileNotFoundError:
-            print("Error: camera_intrinsics.json file not found.")
-            exit(1)
+    for detection in detections:
+        #Draw bounding box around detected AprilTag
+        corners = detection.corners.astype(int)  #Convert to integers for drawing
+        cv2.polylines(frame, [corners], isClosed=True, color=(0, 255, 0), thickness=4)
 
-    def start_video_capture(self):
-        cap = cv2.VideoCapture(0)  # 0 for the default webcam
-        if not cap.isOpened():
-            print("Error: Could not open camera.")
-            return
+        #Get corners of tag
+        img_points = detection.corners.reshape(4, 2)
 
-        options = apriltag.DetectorOptions(families='tag36h11')
-        self.detector = apriltag.Detector(options)
+        #Estimate pose using solvePnP
+        success, rvec, tvec = cv2.solvePnP(obj_points, img_points, camera_matrix, dist_coeffs)
 
-        while self.running:
-            ret, frame = cap.read()
-            if not ret:
-                print("Error: Could not read frame.")
-                break
+        if success:
+            #Draw the final box based on the drawn bounding box
+            if final_box_coords is not None:
+                box_x1, box_y1 = final_box_coords[0]
+                box_x2, box_y2 = final_box_coords[1]
 
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                #Calculate the width and height of the drawn box in meters
+                width_meters = abs(box_x2 - box_x1) * scale_factor
+                height_meters = abs(box_y2 - box_y1) * scale_factor
 
-            # Detect AprilTags
-            detections = self.detector.detect(gray)
+                #Calculate the center of the drawn bounding box
+                box_center_x = (box_x1 + box_x2) / 2
+                box_center_y = (box_y1 + box_y2) / 2
 
-            # Draw detections on the frame
-            for detection in detections:
-                corners = detection.corners.astype(int)
-                cv2.polylines(frame, [corners], isClosed=True, color=(0, 255, 0), thickness=2)
-                # Draw the ID of the detected tag
-                cv2.putText(frame, str(detection.tag_id), tuple(corners[0]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+                #Define 3D points for the final box in the same plane as the AprilTag
+                red_box_3d_points = np.array([
+                    [-width_meters / 2, -height_meters / 2, 0],  #Bottom-left
+                    [width_meters / 2, -height_meters / 2, 0],   #Bottom-right
+                    [width_meters / 2, height_meters / 2, 0],    #Top-right
+                    [-width_meters / 2, height_meters / 2, 0]     #Top-left
+                ], dtype=np.float32)
 
-            # Convert the frame to RGB and put it in the queue for displaying
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            self.frame_queue.put(frame_rgb)
+                #Project the 3D points of the final box to 2D
+                projected_box, _ = cv2.projectPoints(red_box_3d_points, rvec, tvec, camera_matrix, dist_coeffs)
+                projected_box = projected_box.reshape(-1, 2).astype(int)
 
-        cap.release()
+                #Calculate the center of the AprilTag
+                tag_center_x = np.mean(corners[:, 0])
+                tag_center_y = np.mean(corners[:, 1])
 
-    def update_frame(self):
-        """Update the displayed frame from the webcam."""
-        if not self.frame_queue.empty():
-            frame = self.frame_queue.get()
-            # Convert the frame to a PIL Image
-            img = Image.fromarray(frame)
-            img_tk = ImageTk.PhotoImage(image=img)
+                #Translate the projected final box to the center of the AprilTag
+                translation_vector = np.array([tag_center_x - box_center_x, -(tag_center_y - box_center_y)])
+                translated_box = projected_box + translation_vector.astype(int)
 
-            # Display the image on the canvas
-            self.canvas.create_image(0, 0, image=img_tk, anchor=tk.NW)
-            self.canvas.image = img_tk  # Keep a reference to avoid garbage collection
+                #Draw the translated final box on the frame
+                cv2.polylines(frame, [translated_box], isClosed=True, color=(255, 0, 0), thickness=2)
 
-        self.root.after(10, self.update_frame)
+    #Draw the rectangle if coordinates are set ('c' is clicked)
+    if box_coords is not None and box_coords[0] != box_coords[1]:
+        cv2.rectangle(frame, box_coords[0], box_coords[1], (0, 255, 0), 2)
 
-    def on_closing(self):
-        """Handle window closing event."""
-        self.running = False
-        self.root.quit()
-        cv2.destroyAllWindows()
+    #Show the frame with AprilTags and the drawn box
+    cv2.imshow('April Tag Detection', frame)
 
-if __name__ == "__main__":
-    root = tk.Tk()
-    app = App(root)
-    root.protocol("WM_DELETE_WINDOW", app.on_closing)  # Handle window closing
-    root.mainloop()
+    #Check for key presses
+    key = cv2.waitKey(1)
+    
+    if key == ord('c') and box_coords is not None:  #Press 'c' to confirm the box
+        final_box_coords = box_coords
+        box_coords = None  #Reset box_coords for future drawing
+    elif key == ord('q'):  #Press 'q' to exit
+        break
+    elif key == ord('.'):  #Press '.' to increase the scaling factor  
+        scale_factor += 0.001 
+        print(f"Scaling factor increased: {scale_factor}")
+    elif key == ord(','):  #Press ',' to decrease the scaling factor  
+        scale_factor = max(0.001, scale_factor - 0.001)
+        print(f"Scaling factor decreased: {scale_factor}")
 
-
-
-
-# import cv2
-# import apriltag
-# import json
-# import numpy as np
-# import tkinter as tk
-# from PIL import Image, ImageTk
-
-# class DraggableButton:
-#     def __init__(self, root):
-#         self.root = root
-#         self.button = tk.Button(root, text='Drag me!', width=10)
-#         self.button.place(x=100, y=100)  # Initial position
-#         self.button.bind('<Button-1>', self.start_drag)
-#         self.button.bind('<B1-Motion>', self.do_drag)
-
-#     def start_drag(self, event):
-#         """Record the starting position when the mouse button is pressed."""
-#         self.offset_x = event.x
-#         self.offset_y = event.y
-
-#     def do_drag(self, event):
-#         """Move the button to follow the mouse while dragging."""
-#         x = self.root.winfo_pointerx() - self.offset_x
-#         y = self.root.winfo_pointery() - self.offset_y
-#         self.button.place(x=x, y=y)
-
-# if __name__ == '__main__':
-#     root = tk.Tk()
-#     root.title("Draggable Button Example")
-#     root.geometry("800x600")  # Set the window size
-#     draggable_button = DraggableButton(root)
-#     root.mainloop()
-
-# # Load camera intrinsics from a given JSON file
-# try:
-#     with open('camera_intrinsics.json') as f:
-#         intrinsics = json.load(f)
-# except FileNotFoundError:
-#     print("Error: camera_intrinsics.json file not found.")
-#     exit(1)
-
-# if 'camera_matrix' not in intrinsics or 'distortion_coefficients' not in intrinsics:
-#     print("Error: Missing camera intrinsics in JSON.")
-#     exit(1)
-
-# camera_matrix = np.array(intrinsics['camera_matrix'], dtype=np.float32)
-# dist_coeffs = np.array(intrinsics['distortion_coefficients'], dtype=np.float32)
-
-# # Initialize AprilTag detector
-# options = apriltag.DetectorOptions(families='tag36h11')
-# detector = apriltag.Detector(options)
-
-# cap = cv2.VideoCapture(0) 
-
-# if not cap.isOpened():
-#     print("Error: Could not open camera.")
-#     exit(1)
-
-# while cap.isOpened():
-#     ret, frame = cap.read()
-#     if not ret:
-#         print("Error: Could not read frame.")
-#         break
-
-#     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-#     # Detect AprilTags
-#     detections = detector.detect(gray)
-
-#     for detection in detections:
-#         #Draw bounding box around detected April Tag
-#         corners = detection.corners.astype(int)  # Convert to integers for drawing
-#         cv2.polylines(frame, [corners], isClosed=True, color=(0, 255, 0), thickness=2)
-
-#         #Draw the tag ID
-#         #tag_id = detection.tag_id
-#         #cv2.putText(frame, f'Tag ID: {tag_id}', (corners[0][0], corners[0][1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
-
-#     cv2.imshow('AprilTag Detection', frame)
-
-#     # Press 'q' on keyboard to exit screen
-#     if cv2.waitKey(1) & 0xFF == ord('q'):
-#         break
-
-# cap.release()
-# cv2.destroyAllWindows()
+cap.release()
+cv2.destroyAllWindows()
