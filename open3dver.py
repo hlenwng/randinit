@@ -74,12 +74,16 @@ def align_face_to_bottom(mesh, face_index):
     # Define the target "down" direction in the camera frame (e.g., [0, 0, -1])
     target_direction = np.array([0, 0, -1])
 
+    # Apply a flip correction if necessary (example)
+    normal = -normal  # Flip the normal to correct orientation mismatch
+
     # Calculate the rotation matrix to align the face normal with the target direction
     rotation_matrix = o3d.geometry.get_rotation_matrix_from_two_vectors(normal, target_direction)
     
     # Apply rotation to the entire mesh
     mesh.rotate(rotation_matrix, center=mesh.get_center())
     return mesh
+
 
 def assign_faces_to_directions(mesh):
     # Dictionary to store the faces in each direction
