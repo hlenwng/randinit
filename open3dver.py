@@ -325,6 +325,19 @@ def save_position_to_csv(position, filename, mesh_name):
         writer = csv.writer(file)
         writer.writerow([mesh_name, *position, current_time])
 
+def check_size(cad_mesh, box_width, box_height):
+    cad_mesh_vertices = np.asarray(cad_mesh.vertices)
+    mesh_x = np.max(cad_mesh_vertices[:, 0]) - np.min(cad_mesh_vertices[:, 0])
+    mesh_y = np.max(cad_mesh_vertices[:, 1]) - np.min(cad_mesh_vertices[:, 1])
+
+    print(f"Mesh size: {mesh_x} x {mesh_y}")
+    print(f"Box size: {box_width} x {box_height}")
+
+    if abs(box_width) < mesh_x or abs(box_height) < mesh_y:
+        return False
+    
+    return True
+
 # Create window
 cv2.namedWindow('April Tag Detection', cv2.WINDOW_GUI_EXPANDED)
 cv2.setMouseCallback('April Tag Detection', draw_box)
@@ -492,25 +505,28 @@ while cap.isOpened():
     # Press 'r' to randomize mesh location and store location information
     elif key == ord('r') and saved_box_coords:
 
-        # Reset CAD mesh to the initial position (0, 0, 0)
-        cad_mesh_vertices = np.asarray(cad_mesh.vertices)
-        cad_center = np.mean(cad_mesh_vertices, axis=0)  # Get the current center of the mesh
-        cad_mesh_vertices -= cad_center  # Reset mesh to 0, 0, 0 by shifting its center to origin
+        if check_size(cad_mesh, box_width, box_height):
+            # Reset CAD mesh to the initial position (0, 0, 0)
+            cad_mesh_vertices = np.asarray(cad_mesh.vertices)
+            cad_center = np.mean(cad_mesh_vertices, axis=0)  # Get the current center of the mesh
+            cad_mesh_vertices -= cad_center  # Reset mesh to 0, 0, 0 by shifting its center to origin
 
-        random_x = np.random.uniform(0, box_width)
-        random_y = np.random.uniform(0, box_height)
+            random_x = np.random.uniform(0, box_width)
+            random_y = np.random.uniform(0, box_height)
 
-         # Move the CAD mesh by the width and height
-        cad_mesh_vertices[:, 0] += random_x  # Move X by box width
-        cad_mesh_vertices[:, 1] += random_y  # Move Y by box height
+            # Move the CAD mesh by the width and height
+            cad_mesh_vertices[:, 0] += random_x  # Move X by box width
+            cad_mesh_vertices[:, 1] += random_y  # Move Y by box height
 
-        # Update mesh with new position
-        cad_mesh.vertices = o3d.utility.Vector3dVector(cad_mesh_vertices)
-        print(f"Moved CAD mesh to new location: {np.mean(np.asarray(cad_mesh.vertices), axis=0)}")
+            # Update mesh with new position
+            cad_mesh.vertices = o3d.utility.Vector3dVector(cad_mesh_vertices)
+            print(f"Moved CAD mesh to new location: {np.mean(np.asarray(cad_mesh.vertices), axis=0)}")
 
-        # Record info (where the randomized positions are) into a .csv file
-        store_center = np.mean(np.asarray(cad_mesh.vertices), axis=0)
-        save_position_to_csv(store_center, csv_filename, mesh_name)
+            # Record info (where the randomized positions are) into a .csv file
+            store_center = np.mean(np.asarray(cad_mesh.vertices), axis=0)
+            save_position_to_csv(store_center, csv_filename, mesh_name)
+        else:
+            print("The bounding box size is too small to fit the object.")
 
     # Press 'q' to exit
     elif key == ord('q'):  
