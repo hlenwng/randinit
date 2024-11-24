@@ -8,8 +8,9 @@ import time
 import random
 import csv
 import os
+from datetime import datetime
 
-tag_size = 0.06  # 6 cm square
+tag_size = 0.06  # 6cm square
 
 # Load CAD mesh using Open3D
 mesh_name = 'leg_cad.ply'
@@ -21,8 +22,7 @@ csv_filename = 'mesh_positions.csv'
 if not os.path.isfile(csv_filename):
     with open(csv_filename, mode='w', newline='') as file:
         writer = csv.writer(file)
-        # Write the header row (optional, but useful for context)
-        writer.writerow(['mesh_name', 'x', 'y', 'z'])  # Column names for the 3D position
+        writer.writerow(['mesh_name', 'x', 'y', 'z', 'time']) 
 
 # Store IRL coordinates of tag corners
 obj_points = np.array([
@@ -39,7 +39,6 @@ try:
 except FileNotFoundError:
     print("Error: camera_intrinsics.json file not found.")
     exit(1)
-
 if 'camera_matrix' not in intrinsics or 'distortion_coefficients' not in intrinsics:
     print("Error: Missing camera intrinsics in JSON.")
     exit(1)
@@ -52,7 +51,6 @@ options = apriltag.DetectorOptions(families='tag36h11')
 detector = apriltag.Detector(options)
 
 cap = cv2.VideoCapture(0)
-
 if not cap.isOpened():
     print("Error: Could not open camera.")
     exit(1)
@@ -62,19 +60,15 @@ drawing = False  # True if mouse is pressed
 ix, iy = -1, -1  # Initial position of box
 final_box_coords = None  # Final box coordinates after button click
 saved_box_coords = None  # To store the blue box coordinates after pressing 'c'
-draw_box_mode = False  # Flag to enable drawing mode
+draw_box_mode = False  # Toggle to enable drawing mode
 
 cad_mesh_vertices = None  # To store projected vertices of the CAD mesh
 selected_face_index = None  # To store the selected face index
 user_choice = None
 matrix_rotation = None # To store the rotation matrix based on selected face index
 
+shift_height = 0  # Height shift for mesh alignment to z=0
 translation_step = 0.1  # Translation step for mesh movement
-
-def save_position_to_csv(position, filename, mesh_name):
-    with open(filename, mode='a', newline='') as file:
-        writer = csv.writer(file)
-        writer.writerow([mesh_name, *position])
 
 '''
 Functions for CAD mesh manipulation and visualization
@@ -83,7 +77,7 @@ Functions for CAD mesh manipulation and visualization
 def draw_box(event, x_mouse, y_mouse, flags, param):
     global ix, iy, drawing, final_box_coords
     
-    if not draw_box_mode: # Don't allow drawing if 'f' was not pressed
+    if not draw_box_mode: 
         return
 
     if event == cv2.EVENT_LBUTTONDOWN:
@@ -92,12 +86,24 @@ def draw_box(event, x_mouse, y_mouse, flags, param):
 
     elif event == cv2.EVENT_MOUSEMOVE:
         if drawing:
-            # Update the box's end coordinates based on mouse movement
             final_box_coords = [(ix, iy), (x_mouse, y_mouse)]
             print(f"Drawing box from {final_box_coords[0]} to {final_box_coords[1]}")
 
     elif event == cv2.EVENT_LBUTTONUP:
         drawing = False
+
+def get_user_input():
+    global user_choice
+    while True:
+        print("\nChoose a face direction to color (only one at a time):")
+        print("1. Front, 2. Back, 3. Left, 4. Right, 5. Top, 6. Bottom, 0. Exit")
+        try:
+            choice = int(input("Enter the direction number: "))
+            user_choice = choice
+            if choice == 0:
+                break
+        except ValueError:
+            print("Please enter a valid number.")
 
 def align_face_to_bottom(mesh, face_index):
     # Compute normals for the mesh
@@ -118,39 +124,19 @@ def align_face_to_bottom(mesh, face_index):
     # Create the rotation matrix to align the face normal with the target direction
     rotation_matrix = o3d.geometry.get_rotation_matrix_from_two_vectors(normal, target_direction)
 
-    # Apply rotation to mesh
     mesh.rotate(rotation_matrix, center=mesh.get_center())
 
-    # Return the updated mesh
     return mesh
 
 def shift_mesh_z(cad_mesh):
 
     cad_mesh.compute_vertex_normals()
 
-    # Step 1: Calculate height of the object
+    # Calculate height of the object
     vertices = np.asarray(cad_mesh.vertices)
     height = vertices[:, 2].max() - vertices[:, 2].min()
 
     return height
-
-    # # Step 2: Calculate the current z-axis position
-    # min_z_position = vertices[:, 2].mean()
-
-    # # Step 3: Calculate the shift
-    # shift = min_z_position - (height*2)
-
-    # # Step 4: Apply the shift
-    # # Create a translation matrix to move the mesh along the z-axis
-    # translation = np.eye(4)  # 4x4 identity matrix
-    # translation[2, 3] = -shift  # Apply the shift along the z-axis
-
-    # # Transform the mesh
-    # cad_mesh.transform(translation)
-
-    # new_center = np.mean(np.asarray(cad_mesh.vertices), axis=0)
-
-    # print(f"Shifted mesh to new location: {new_center}")
 
 def display_cad_mesh(mesh):
     global user_choice, selected_face_index, matrix_rotation
@@ -159,12 +145,10 @@ def display_cad_mesh(mesh):
     directions = assign_faces_to_directions(mesh)
     reset_mesh_color(mesh)
 
-    # Create the Open3D visualizer
     vis = o3d.visualization.Visualizer()
     vis.create_window(window_name="CAD Mesh", width=800, height=600)
     vis.add_geometry(mesh)
 
-    # Start a thread to get user input
     input_thread = threading.Thread(target=get_user_input)
     input_thread.start()
 
@@ -180,7 +164,7 @@ def display_cad_mesh(mesh):
 
             # Reset mesh color before applying new selection
             reset_mesh_color(mesh)
-            selected_color = [1.0, 0.0, 0.0]  # Red color
+            selected_color = [1.0, 0.0, 0.0]  
 
             # Map user choice to direction and color the face
             if choice == 1:
@@ -211,7 +195,6 @@ def display_cad_mesh(mesh):
         vis.poll_events()
         vis.update_renderer()
         
-        # Add a slight delay to avoid high CPU usage
         time.sleep(0.01)
 
     vis.destroy_window()
@@ -261,36 +244,15 @@ def color_faces(mesh, faces, color):
             vertex_colors[vertex_idx] = color
     mesh.vertex_colors = o3d.utility.Vector3dVector(vertex_colors)
 
-def randomize_mesh_location(box_coords, z=0):
-    (x_min, y_min), (x_max, y_max) = box_coords
-    random_x = np.random.uniform(x_min, x_max)
-    random_y = np.random.uniform(y_min, y_max)
-
-    return np.array([random_x, random_y, z])
-
 def update_mesh_location(mesh, new_location):
-    """Translate the CAD mesh to a new location."""
+    # Translate mesh to a new location
     current_center = np.mean(np.asarray(mesh.vertices), axis=0)
     translation = new_location - current_center
-    translation[2] = 0  # Adjusting the Z-axis, set to 0 or another value as needed
+    translation[2] = 0  # z-axis location is fixed
 
     mesh.translate(translation)
 
-def get_user_input():
-    global user_choice
-    while True:
-        print("\nChoose a face direction to color (only one at a time):")
-        print("1. Front, 2. Back, 3. Left, 4. Right, 5. Top, 6. Bottom, 0. Exit")
-        try:
-            choice = int(input("Enter the direction number: "))
-            user_choice = choice
-            if choice == 0:
-                break
-        except ValueError:
-            print("Please enter a valid number.")
-
 def project_and_print_center(mesh, camera_matrix, dist_coeffs):
-    """Project the CAD mesh center and print 3D and 2D positions."""
     # Get the vertices of the CAD mesh
     vertices = np.asarray(mesh.vertices)
     
@@ -312,6 +274,56 @@ def project_and_print_center(mesh, camera_matrix, dist_coeffs):
     #print(f"Center of CAD Mesh (2D): {projected_center[0]}")
     return projected_center[0]
 
+def convert_to_3d(box_coords, rvec, tvec, camera_matrix, dist_coeffs):
+    """Convert the 2D bounding box coordinates to 3D world coordinates."""
+    
+    # Define the 3D object points (bounding box in the world frame)
+    object_points_3d = np.array([
+        [-tag_size / 2, -tag_size / 2, 0],  # Bottom-left corner
+        [tag_size / 2, -tag_size / 2, 0],   # Bottom-right corner
+        [tag_size / 2, tag_size / 2, 0],    # Top-right corner
+        [-tag_size / 2, tag_size / 2, 0]    # Top-left corner
+    ], dtype=np.float32)
+    
+    # Define the 2D points of the bounding box in image space
+    box_points_2d = np.array([
+        [box_coords[0][0], box_coords[0][1]],  # Top-left
+        [box_coords[1][0], box_coords[0][1]],  # Top-right
+        [box_coords[1][0], box_coords[1][1]],  # Bottom-right
+        [box_coords[0][0], box_coords[1][1]]   # Bottom-left
+    ], dtype=np.float32)
+    
+    # Use solvePnP to get the rotation and translation vectors
+    success, rvec, tvec = cv2.solvePnP(object_points_3d, box_points_2d, camera_matrix, dist_coeffs)
+    
+    if not success:
+        raise ValueError("solvePnP failed to find a valid solution.")
+    
+    # Now, project the object points from 3D to 2D space
+    projected_points_2d, _ = cv2.projectPoints(object_points_3d, rvec, tvec, camera_matrix, dist_coeffs)
+    
+    # Convert the projected points from (4, 1, 2) to (4, 2)
+    projected_points_2d = projected_points_2d.reshape(-1, 2)
+    
+    # For each 2D point, map back to 3D space using the depth (z-value)
+    # In this case, we'll use the z-value of the tag as the depth (it’s in meters)
+    projected_points_3d = []
+    for point_2d in projected_points_2d:
+        # Here, you may need to adjust based on the actual z-depth or tag size
+        # For simplicity, we'll assume z=0 (flat plane), or you may use tvec[2]
+        projected_points_3d.append([point_2d[0], point_2d[1], 0])
+    
+    # Convert the list to a numpy array for better handling
+    projected_points_3d = np.array(projected_points_3d)
+    
+    return projected_points_3d
+
+def save_position_to_csv(position, filename, mesh_name):
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    with open(filename, mode='a', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow([mesh_name, *position, current_time])
 
 # Create window
 cv2.namedWindow('April Tag Detection', cv2.WINDOW_GUI_EXPANDED)
@@ -342,7 +354,6 @@ while cap.isOpened():
             '''
 
             projected_center = project_and_print_center(cad_mesh, camera_matrix, dist_coeffs)
-            #cv2.circle(frame, tuple(projected_center), 5, (0, 255, 0), -1)  # Draw the 2D center
 
             # Convert saved box (2D) into a 3D box relative to the tag (pixel units)
             box_width = (saved_box_coords[1][0] - saved_box_coords[0][0]) / 1000.0  # Scale to meters
@@ -384,10 +395,6 @@ while cap.isOpened():
 
             # Prepare to project the CAD mesh
             if cad_mesh_vertices is not None:
-                # Rotate, scale, and translate CAD mesh vertices
-                #scaled_vertices = np.asarray(cad_mesh_vertices) * scaling_factor * 10  # Apply scaling
-                #rotated_vertices = np.dot(matrix_rotation, scaled_vertices.T).T  # Apply rotation
-                #transformed_vertices = rotated_vertices + tvec.flatten()  # Apply translation
 
                 # Project the transformed CAD mesh vertices onto the 2D frame
                 projected_vertices, _ = cv2.projectPoints(cad_mesh_vertices, rvec, tvec, camera_matrix, dist_coeffs)
@@ -438,7 +445,7 @@ while cap.isOpened():
 
         if 'selected_face_normal' in globals():
             # Create a rotation matrix based on the selected face normal
-            up_vector = np.array([0, 0, 1])  # Assuming Z is up in your coordinate system
+            up_vector = np.array([0, 0, 1]) 
             rotation_axis = np.cross(up_vector, selected_face_normal)
             rotation_angle = np.arccos(np.clip(np.dot(up_vector, selected_face_normal), -1.0, 1.0))  # Handle numerical stability
 
@@ -466,35 +473,44 @@ while cap.isOpened():
         translation_z = -min_z  # Shift to align the bottom of the mesh with z = 0
         cad_mesh_vertices[:, 2] += translation_z
 
-        # Step 3: Adjust the translation based on the height of the CAD mesh
+        # Adjust the translation based on the height of the CAD mesh
         height = np.max(cad_mesh_vertices[:, 2]) - np.min(cad_mesh_vertices[:, 2])  # Calculate the height of the mesh
-        shift_height = height / 2  # Adjust this based on your desired positioning of the bottom of the mesh
+        shift_height = height / 2 
         cad_mesh_vertices[:, 2] -= shift_height  # Move the CAD mesh down by half its height
 
-        # Step 4: Align the CAD mesh center to the AprilTag position (as before)
+        # Align the CAD mesh center to the AprilTag position
         cad_center = np.mean(cad_mesh_vertices, axis=0)
         translation_xy = np.array([tvec.flatten()[0] - cad_center[0], tvec.flatten()[1] - cad_center[1], 0])
         cad_mesh_vertices += translation_xy
 
-        #cad_mesh.vertices = o3d.utility.Vector3dVector(cad_mesh_vertices)
-   
+        cad_center = np.mean(cad_mesh_vertices, axis=0)  # Recalculate the center of the mesh
+        cad_mesh_vertices -= cad_center
+        print(f"cad mesh location: {cad_center}")
+
+        cad_mesh.vertices = o3d.utility.Vector3dVector(cad_mesh_vertices)
+
     # Press 'r' to randomize mesh location and store location information
     elif key == ord('r') and saved_box_coords:
-        # random_location = randomize_mesh_location(saved_box_coords)
-        # update_mesh_location(cad_mesh, random_location)
-        # print(f"Randomized mesh location to {random_location}")
 
-        # center = np.mean(np.asarray(cad_mesh.vertices), axis=0)
-        # new_center = center + np.array([translation_step, translation_step, 0])
-        # update_mesh_location(cad_mesh, new_center)
-        # print(f"Shifted mesh to new location: {new_center}")
+        # Reset CAD mesh to the initial position (0, 0, 0)
+        cad_mesh_vertices = np.asarray(cad_mesh.vertices)
+        cad_center = np.mean(cad_mesh_vertices, axis=0)  # Get the current center of the mesh
+        cad_mesh_vertices -= cad_center  # Reset mesh to 0, 0, 0 by shifting its center to origin
 
-        
-        #print("height of the mesh: ", calculate_mesh_height(cad_mesh))
-        print("hello")
+        random_x = np.random.uniform(0, box_width)
+        random_y = np.random.uniform(0, box_height)
 
-        #record info (where the randomized positions are) into a file
-        #save_position_to_csv(new_center, csv_filename, mesh_name)
+         # Move the CAD mesh by the width and height
+        cad_mesh_vertices[:, 0] += random_x  # Move X by box width
+        cad_mesh_vertices[:, 1] += random_y  # Move Y by box height
+
+        # Update mesh with new position
+        cad_mesh.vertices = o3d.utility.Vector3dVector(cad_mesh_vertices)
+        print(f"Moved CAD mesh to new location: {np.mean(np.asarray(cad_mesh.vertices), axis=0)}")
+
+        # Record info (where the randomized positions are) into a .csv file
+        store_center = np.mean(np.asarray(cad_mesh.vertices), axis=0)
+        save_position_to_csv(store_center, csv_filename, mesh_name)
 
     # Press 'q' to exit
     elif key == ord('q'):  
