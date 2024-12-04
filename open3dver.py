@@ -9,13 +9,16 @@ import random
 import csv
 import os
 from datetime import datetime
+from scipy.spatial import cKDTree
 
 tag_size = 0.06  # 6cm square
 
 # Load CAD mesh using Open3D
-mesh_name = 'leg_cad.ply'
-cad_mesh = o3d.io.read_triangle_mesh(f'/Users/helenwang/helen_lars/meshes/{mesh_name}')
-cad_mesh = cad_mesh.simplify_quadric_decimation(target_number_of_triangles=500)  # Simplify the mesh for faster rendering
+mesh_name = 'leg_cad'
+cad_mesh = o3d.io.read_triangle_mesh(f'/Users/helenwang/helen_lars/meshes/{mesh_name}.ply')
+cad_mesh = cad_mesh.subdivide_midpoint(number_of_iterations=1)  # Increase iterations for finer mesh
+
+#cad_mesh = cad_mesh.simplify_quadric_decimation(target_number_of_triangles=500)  # Simplify the mesh for faster rendering
 cad_mesh.compute_vertex_normals()
 
 csv_filename = 'mesh_positions.csv'
@@ -66,6 +69,8 @@ cad_mesh_vertices = None  # To store projected vertices of the CAD mesh
 selected_face_index = None  # To store the selected face index
 user_choice = None
 matrix_rotation = None # To store the rotation matrix based on selected face index
+adjusted_scaling = 1.25  # To fine-tune the scaling of displayed mesh
+key_pressed = None  # To store the key pressed by the user
 
 shift_height = 0  # Height shift for mesh alignment to z=0
 translation_step = 0.1  # Translation step for mesh movement
@@ -105,7 +110,7 @@ def get_user_input():
         except ValueError:
             print("Please enter a valid number.")
 
-def align_face_to_bottom(mesh, face_index):
+def align_face_to_bottom(mesh, face_index, scaling):
     # Compute normals for the mesh
     mesh.compute_vertex_normals()
 
@@ -125,6 +130,7 @@ def align_face_to_bottom(mesh, face_index):
     rotation_matrix = o3d.geometry.get_rotation_matrix_from_two_vectors(normal, target_direction)
 
     mesh.rotate(rotation_matrix, center=mesh.get_center())
+    mesh.scale(scaling, center=mesh.get_center())
 
     return mesh
 
@@ -338,9 +344,11 @@ def check_size(cad_mesh, box_width, box_height):
     
     return True
 
+
 # Create window
 cv2.namedWindow('April Tag Detection', cv2.WINDOW_GUI_EXPANDED)
 cv2.setMouseCallback('April Tag Detection', draw_box)
+
 
 # Open camera
 while cap.isOpened():
@@ -348,6 +356,8 @@ while cap.isOpened():
     if not ret:
         print("Error: Could not read frame.")
         break
+
+    key = cv2.waitKey(1) & 0xFF
 
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     detections = detector.detect(gray)
@@ -396,15 +406,18 @@ while cap.isOpened():
 
             # Assuming 'face_index' is set from the face selection process
             if face_index is not None:
-                cad_mesh = align_face_to_bottom(cad_mesh, face_index)
+                cad_mesh = align_face_to_bottom(cad_mesh, face_index, adjusted_scaling)
                 print(f"Aligned face {face_index} to bottom.")
 
             # Calculate CAD mesh scaling based on Tag size
             cad_bounds = np.asarray(cad_mesh.get_axis_aligned_bounding_box().get_extent())  # Get bounding box of CAD mesh
             cad_size = np.linalg.norm(cad_bounds)  # Calculate the size of the CAD mesh
-            scaling_factor = tag_size / cad_size  # Compute scaling factor based on tag size
             center = cad_mesh.get_center()
-            cad_mesh.scale(scaling_factor*5, center)
+            
+            if key_pressed is not None:
+                cad_mesh.scale(adjusted_scaling, center)
+                key_pressed = None
+
 
             # Prepare to project the CAD mesh
             if cad_mesh_vertices is not None:
@@ -435,8 +448,11 @@ while cap.isOpened():
     '''
 
     # Check for key presses
-    key = cv2.waitKey(1)
+    #key = cv2.waitKey(1)
     
+    if 'adjusted_scaling' not in globals():
+        adjusted_scaling = 1.0  # Default scale if not defined
+
     # Press 't' to toggle drawing mode
     if key == ord('t'):
         draw_box_mode = not draw_box_mode 
@@ -449,8 +465,8 @@ while cap.isOpened():
         print(f"Saved box coordinates: {saved_box_coords}")
 
     # Press 'o' to open the CAD mesh window
-    elif key == ord('o'):  
-        display_cad_mesh(cad_mesh)
+    # elif key == ord('o'):  
+    #     display_cad_mesh(cad_mesh)
         
     # Press 'p' to project the CAD mesh in camera frame
     elif key == ord('p') and saved_box_coords is not None:  
@@ -498,18 +514,29 @@ while cap.isOpened():
 
         cad_center = np.mean(cad_mesh_vertices, axis=0)  # Recalculate the center of the mesh
         cad_mesh_vertices -= cad_center
-        print(f"cad mesh location: {cad_center}")
+        #print(f"cad mesh location: {cad_center}")
+
+        cad_mesh.scale(adjusted_scaling, cad_center)
+        print(f"Adjusted scaling: {adjusted_scaling}")
 
         cad_mesh.vertices = o3d.utility.Vector3dVector(cad_mesh_vertices)
 
     # Press 'r' to randomize mesh location and store location information
     elif key == ord('r') and saved_box_coords:
 
+        # randomize_rotation_matrix = np.array([
+        #     [0, -1, 0],
+        #     [1,  0, 0],
+        #     [0,  0, 1]
+        # ])
+
         if check_size(cad_mesh, box_width, box_height):
             # Reset CAD mesh to the initial position (0, 0, 0)
             cad_mesh_vertices = np.asarray(cad_mesh.vertices)
             cad_center = np.mean(cad_mesh_vertices, axis=0)  # Get the current center of the mesh
             cad_mesh_vertices -= cad_center  # Reset mesh to 0, 0, 0 by shifting its center to origin
+
+            #cad_mesh_vertices = cad_mesh_vertices @ randomize_rotation_matrix.T  # Rotate the mesh randomly
 
             random_x = np.random.uniform(0, box_width)
             random_y = np.random.uniform(0, box_height)
@@ -527,6 +554,54 @@ while cap.isOpened():
             save_position_to_csv(store_center, csv_filename, mesh_name)
         else:
             print("The bounding box size is too small to fit the object.")
+
+    # Press '-' to scale mesh down
+    elif key == ord('-') and key_pressed != '-':
+        adjusted_scaling -= 0.05
+        #adjusted_scaling = max(0.001, adjusted_scaling)
+        key_pressed = '-'
+        print(f"Adjusted scaling: {adjusted_scaling}")
+
+    # Press '=' to scale mesh up
+    elif key == ord('=') and key_pressed != '=':
+        adjusted_scaling += 0.05
+        #adjusted_scaling = min(10, adjusted_scaling)
+        key_pressed = '='
+        print(f"Adjusted scaling: {adjusted_scaling}")
+
+    # Press '[' to rotate mesh on the same face
+    elif key == ord('['):
+        cad_mesh.center = np.mean(np.asarray(cad_mesh.vertices), axis=0)
+        box_rotation_matrix = np.array([
+            [-1, 0, 0],
+            [0,  -1, 0],
+            [0,  0, 1]
+        ], dtype=np.float32)
+        box_3d = box_3d @ box_rotation_matrix.T
+
+    # Press ']' to rotate mesh on the same face
+    elif key == ord(']'):
+        cad_mesh.center = np.mean(np.asarray(cad_mesh.vertices), axis=0)
+        box_rotation_matrix = np.array([
+            [-1, 0, 0],
+            [0,  -1, 0],
+            [0,  0, 1]
+        ], dtype=np.float32)
+        box_3d = box_3d @ box_rotation_matrix.T
+
+    # Press 'f' to rotate mesh between all its "faces"
+    elif key == ord('f'):
+        cad_mesh.center = np.mean(np.asarray(cad_mesh.vertices), axis=0)
+        box_rotation_matrix = np.array([
+            [-1, 0, 0],
+            [0,  -1, 0],
+            [0,  0, 1]
+        ], dtype=np.float32)
+        box_3d = box_3d @ box_rotation_matrix.T
+        
+    # If the key is released, reset key_pressed
+    elif key == 255:  # No key pressed
+        key_pressed = None
 
     # Press 'q' to exit
     elif key == ord('q'):  
