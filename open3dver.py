@@ -3,22 +3,24 @@ import apriltag
 import json
 import numpy as np
 import open3d as o3d
-import threading
 import time
-import random
 import csv
 import os
 from datetime import datetime
 from scipy.spatial import cKDTree
 
-tag_size = 0.06  # 6cm square
+'''
+Values needed by user:
+- JSON file with camera intrinsics
+- CAD mesh file
+- Tag size
+'''
 
 # Load CAD mesh using Open3D
 mesh_name = 'leg_cad'
 cad_mesh = o3d.io.read_triangle_mesh(f'/Users/helenwang/helen_lars/meshes/{mesh_name}.ply')
-cad_mesh = cad_mesh.subdivide_midpoint(number_of_iterations=1)  # Increase iterations for finer mesh
-
-#cad_mesh = cad_mesh.simplify_quadric_decimation(target_number_of_triangles=500)  # Simplify the mesh for faster rendering
+#cad_mesh = cad_mesh.subdivide_midpoint(number_of_iterations=1)  # Increase iterations for a more detailed mesh
+cad_mesh = cad_mesh.simplify_quadric_decimation(target_number_of_triangles=500)  # Simplify the mesh for faster rendering
 cad_mesh.compute_vertex_normals()
 
 csv_filename = 'mesh_positions.csv'
@@ -28,6 +30,7 @@ if not os.path.isfile(csv_filename):
         writer.writerow(['mesh_name', 'x', 'y', 'z', 'time']) 
 
 # Store IRL coordinates of tag corners
+tag_size = 0.06  # 6cm square
 obj_points = np.array([
     [-tag_size / 2, -tag_size / 2, 0],
     [tag_size / 2, -tag_size / 2, 0],
@@ -58,22 +61,35 @@ if not cap.isOpened():
     print("Error: Could not open camera.")
     exit(1)
 
+# Print the keyboard commands and their descriptions for the user
+print('\n')
+print("RandInit Tool Keyboard commands: ")
+print("Press 't' to toggle drawing mode on/off")
+print("Press 'c' to confirm the bounding box drawn")
+print("Press 'p' to project the CAD mesh in camera frame")
+print("Press 'r' to randomize mesh location and store location information")
+print("Press 'y' to toggle yaw option for randomization")
+print("Press '-'/'=' to scale mesh down/up")
+print("Press 'q' to exit")
+print("Please refer to the GIT README for more information.")
+print('\n')
+
 # Stored variables
+draw_box_mode = False  # Toggle to enable drawing mode
 drawing = False  # True if mouse is pressed
 ix, iy = -1, -1  # Initial position of box
 final_box_coords = None  # Final box coordinates after button click
 saved_box_coords = None  # To store the blue box coordinates after pressing 'c'
-draw_box_mode = False  # Toggle to enable drawing mode
 
 cad_mesh_vertices = None  # To store projected vertices of the CAD mesh
-selected_face_index = None  # To store the selected face index
-user_choice = None
-matrix_rotation = None # To store the rotation matrix based on selected face index
 adjusted_scaling = 1.25  # To fine-tune the scaling of displayed mesh
-key_pressed = None  # To store the key pressed by the user
-
+yaw_mode = False  # Toggle to enable yaw randomization
 shift_height = 0  # Height shift for mesh alignment to z=0
 translation_step = 0.1  # Translation step for mesh movement
+
+INITIAL_KEY_DELAY = 2  # Initial delay before starting the program
+KEY_DELAY = 0.5  # Delay between key presses
+last_key_time = 0
 
 '''
 Functions for CAD mesh manipulation and visualization
@@ -92,171 +108,10 @@ def draw_box(event, x_mouse, y_mouse, flags, param):
     elif event == cv2.EVENT_MOUSEMOVE:
         if drawing:
             final_box_coords = [(ix, iy), (x_mouse, y_mouse)]
-            print(f"Drawing box from {final_box_coords[0]} to {final_box_coords[1]}")
+            #print(f"Drawing box from {final_box_coords[0]} to {final_box_coords[1]}")
 
     elif event == cv2.EVENT_LBUTTONUP:
         drawing = False
-
-def get_user_input():
-    global user_choice
-    while True:
-        print("\nChoose a face direction to color (only one at a time):")
-        print("1. Front, 2. Back, 3. Left, 4. Right, 5. Top, 6. Bottom, 0. Exit")
-        try:
-            choice = int(input("Enter the direction number: "))
-            user_choice = choice
-            if choice == 0:
-                break
-        except ValueError:
-            print("Please enter a valid number.")
-
-def align_face_to_bottom(mesh, face_index, scaling):
-    # Compute normals for the mesh
-    mesh.compute_vertex_normals()
-
-    # Get the vertices of the specified face
-    triangle = np.asarray(mesh.triangles)[face_index]
-    vertices = np.asarray(mesh.vertices)[triangle]
-
-    # Calculate the normal of the face
-    normal = np.cross(vertices[1] - vertices[0], vertices[2] - vertices[0])
-    normal /= np.linalg.norm(normal)
-
-    # Target direction is the downward z-axis
-    target_direction = np.array([0, 0, -1])  # Flip for down direction
-    normal = -normal  # Flip the normal to point in the correct direction
-
-    # Create the rotation matrix to align the face normal with the target direction
-    rotation_matrix = o3d.geometry.get_rotation_matrix_from_two_vectors(normal, target_direction)
-
-    mesh.rotate(rotation_matrix, center=mesh.get_center())
-    mesh.scale(scaling, center=mesh.get_center())
-
-    return mesh
-
-def shift_mesh_z(cad_mesh):
-
-    cad_mesh.compute_vertex_normals()
-
-    # Calculate height of the object
-    vertices = np.asarray(cad_mesh.vertices)
-    height = vertices[:, 2].max() - vertices[:, 2].min()
-
-    return height
-
-def display_cad_mesh(mesh):
-    global user_choice, selected_face_index, matrix_rotation
-    
-    # Assign faces to each of the six primary directions
-    directions = assign_faces_to_directions(mesh)
-    reset_mesh_color(mesh)
-
-    vis = o3d.visualization.Visualizer()
-    vis.create_window(window_name="CAD Mesh", width=800, height=600)
-    vis.add_geometry(mesh)
-
-    input_thread = threading.Thread(target=get_user_input)
-    input_thread.start()
-
-    # Visualization and input processing loop
-    while True:
-        # Check if there's a new user input
-        if user_choice is not None:
-            choice = user_choice
-            user_choice = None  # Reset choice after processing
-
-            if choice == 0:
-                break
-
-            # Reset mesh color before applying new selection
-            reset_mesh_color(mesh)
-            selected_color = [1.0, 0.0, 0.0]  
-
-            # Map user choice to direction and color the face
-            if choice == 1:
-                color_faces(mesh, directions["front"], selected_color)
-                print("Colored the front faces.")
-            elif choice == 2:
-                color_faces(mesh, directions["back"], selected_color)
-                print("Colored the back faces.")
-            elif choice == 3:
-                color_faces(mesh, directions["left"], selected_color)
-                print("Colored the left faces.")
-            elif choice == 4:
-                color_faces(mesh, directions["right"], selected_color)
-                print("Colored the right faces.")
-            elif choice == 5:
-                color_faces(mesh, directions["top"], selected_color)
-                print("Colored the top faces.")
-            elif choice == 6:
-                color_faces(mesh, directions["bottom"], selected_color)
-                print("Colored the bottom faces.")
-            else:
-                print("Invalid choice. Please select a number between 0 and 6.")
-
-            # Update mesh visualization with new colors
-            vis.update_geometry(mesh)
-        
-        # Poll events and update the renderer
-        vis.poll_events()
-        vis.update_renderer()
-        
-        time.sleep(0.01)
-
-    vis.destroy_window()
-    input_thread.join()  # Ensure input thread is cleaned up
-
-def assign_faces_to_directions(mesh):
-    # Dictionary to store the faces in each direction
-    directions = {
-        "front": [],
-        "back": [],
-        "left": [],
-        "right": [],
-        "top": [],
-        "bottom": []
-    }
-    
-    # Calculate the normal of each face to determine its orientation
-    mesh.compute_triangle_normals()
-    triangle_normals = np.asarray(mesh.triangle_normals)
-
-    # Classify each face based on its normal
-    for idx, normal in enumerate(triangle_normals):
-        if np.dot(normal, [0, 0, 1]) > 0.9:        # Z+ direction -> front
-            directions["front"].append(idx)
-        elif np.dot(normal, [0, 0, -1]) > 0.9:     # Z- direction -> back
-            directions["back"].append(idx)
-        elif np.dot(normal, [1, 0, 0]) > 0.9:      # X+ direction -> right
-            directions["right"].append(idx)
-        elif np.dot(normal, [-1, 0, 0]) > 0.9:     # X- direction -> left
-            directions["left"].append(idx)
-        elif np.dot(normal, [0, 1, 0]) > 0.9:      # Y+ direction -> top
-            directions["top"].append(idx)
-        elif np.dot(normal, [0, -1, 0]) > 0.9:     # Y- direction -> bottom
-            directions["bottom"].append(idx)
-
-    return directions
-
-def reset_mesh_color(mesh, default_color=[0.8, 0.8, 0.8]):
-    # Set the entire mesh to the default color
-    mesh.vertex_colors = o3d.utility.Vector3dVector(np.tile(default_color, (len(mesh.vertices), 1)))
-
-def color_faces(mesh, faces, color):
-    # Color the specified faces
-    vertex_colors = np.asarray(mesh.vertex_colors)
-    for face_idx in faces:
-        for vertex_idx in mesh.triangles[face_idx]:
-            vertex_colors[vertex_idx] = color
-    mesh.vertex_colors = o3d.utility.Vector3dVector(vertex_colors)
-
-def update_mesh_location(mesh, new_location):
-    # Translate mesh to a new location
-    current_center = np.mean(np.asarray(mesh.vertices), axis=0)
-    translation = new_location - current_center
-    translation[2] = 0  # z-axis location is fixed
-
-    mesh.translate(translation)
 
 def project_and_print_center(mesh, camera_matrix, dist_coeffs):
     # Get the vertices of the CAD mesh
@@ -336,19 +191,18 @@ def check_size(cad_mesh, box_width, box_height):
     mesh_x = np.max(cad_mesh_vertices[:, 0]) - np.min(cad_mesh_vertices[:, 0])
     mesh_y = np.max(cad_mesh_vertices[:, 1]) - np.min(cad_mesh_vertices[:, 1])
 
-    print(f"Mesh size: {mesh_x} x {mesh_y}")
-    print(f"Box size: {box_width} x {box_height}")
+    #print(f"Mesh size: {mesh_x} x {mesh_y}")
+    #print(f"Box size: {box_width} x {box_height}")
 
     if abs(box_width) < mesh_x or abs(box_height) < mesh_y:
         return False
     
     return True
 
-
 # Create window
 cv2.namedWindow('April Tag Detection', cv2.WINDOW_GUI_EXPANDED)
 cv2.setMouseCallback('April Tag Detection', draw_box)
-
+start_time = time.time()
 
 # Open camera
 while cap.isOpened():
@@ -357,7 +211,18 @@ while cap.isOpened():
         print("Error: Could not read frame.")
         break
 
+    # Check for key presses 
     key = cv2.waitKey(1) & 0xFF
+    elapsed_time = time.time() - start_time
+
+    # Allow keyboard commands after window has fully loaded
+    # if elapsed_time < INITIAL_KEY_DELAY:
+    #     continue
+    
+    # Add delay to prevent multiple key presses
+    current_time = time.time()
+    if current_time - last_key_time < KEY_DELAY:
+        continue
 
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     detections = detector.detect(gray)
@@ -402,22 +267,10 @@ while cap.isOpened():
             Project CAD mesh onto plane
             '''
 
-            face_index = None  # To store the selected face index
-
-            # Assuming 'face_index' is set from the face selection process
-            if face_index is not None:
-                cad_mesh = align_face_to_bottom(cad_mesh, face_index, adjusted_scaling)
-                print(f"Aligned face {face_index} to bottom.")
-
             # Calculate CAD mesh scaling based on Tag size
             cad_bounds = np.asarray(cad_mesh.get_axis_aligned_bounding_box().get_extent())  # Get bounding box of CAD mesh
             cad_size = np.linalg.norm(cad_bounds)  # Calculate the size of the CAD mesh
             center = cad_mesh.get_center()
-            
-            if key_pressed is not None:
-                cad_mesh.scale(adjusted_scaling, center)
-                key_pressed = None
-
 
             # Prepare to project the CAD mesh
             if cad_mesh_vertices is not None:
@@ -447,12 +300,6 @@ while cap.isOpened():
     Eventually, convert these to buttons within the GUI interface
     '''
 
-    # Check for key presses
-    #key = cv2.waitKey(1)
-    
-    if 'adjusted_scaling' not in globals():
-        adjusted_scaling = 1.0  # Default scale if not defined
-
     # Press 't' to toggle drawing mode
     if key == ord('t'):
         draw_box_mode = not draw_box_mode 
@@ -462,29 +309,13 @@ while cap.isOpened():
     elif key == ord('c') and final_box_coords:  
         saved_box_coords = final_box_coords
         final_box_coords = None  # Clear the current box to hide it
-        print(f"Saved box coordinates: {saved_box_coords}")
-
-    # Press 'o' to open the CAD mesh window
-    # elif key == ord('o'):  
-    #     display_cad_mesh(cad_mesh)
+        print(f"Saved drawn bounding box coordinates: {saved_box_coords}")
         
     # Press 'p' to project the CAD mesh in camera frame
     elif key == ord('p') and saved_box_coords is not None:  
         project_and_print_center(cad_mesh, camera_matrix, dist_coeffs)
 
-        if 'selected_face_normal' in globals():
-            # Create a rotation matrix based on the selected face normal
-            up_vector = np.array([0, 0, 1]) 
-            rotation_axis = np.cross(up_vector, selected_face_normal)
-            rotation_angle = np.arccos(np.clip(np.dot(up_vector, selected_face_normal), -1.0, 1.0))  # Handle numerical stability
-
-            # Create the rotation matrix using Rodrigues' rotation formula
-            rotation_matrix, _ = cv2.Rodrigues(rotation_axis * rotation_angle)
-
-            # Transform the mesh vertices based on the selected face orientation
-            cad_mesh_vertices = np.asarray(cad_mesh.vertices) @ rotation_matrix.T
-        else:
-            cad_mesh_vertices = np.asarray(cad_mesh.vertices)
+        cad_mesh_vertices = np.asarray(cad_mesh.vertices)
 
         # Scale the CAD mesh based on the tag size
         cad_bounds = np.asarray(cad_mesh.get_axis_aligned_bounding_box().get_extent())
@@ -521,25 +352,45 @@ while cap.isOpened():
 
         cad_mesh.vertices = o3d.utility.Vector3dVector(cad_mesh_vertices)
 
+    # Press 'y' to toggle yaw randomization
+    elif key == ord('y'):
+        yaw_mode = not yaw_mode
+        print(f"Yaw randomization {'enabled' if yaw_mode else 'disabled'}")
+
     # Press 'r' to randomize mesh location and store location information
     elif key == ord('r') and saved_box_coords:
 
-        # randomize_rotation_matrix = np.array([
-        #     [0, -1, 0],
-        #     [1,  0, 0],
-        #     [0,  0, 1]
-        # ])
-
         if check_size(cad_mesh, box_width, box_height):
+
             # Reset CAD mesh to the initial position (0, 0, 0)
             cad_mesh_vertices = np.asarray(cad_mesh.vertices)
             cad_center = np.mean(cad_mesh_vertices, axis=0)  # Get the current center of the mesh
             cad_mesh_vertices -= cad_center  # Reset mesh to 0, 0, 0 by shifting its center to origin
 
-            #cad_mesh_vertices = cad_mesh_vertices @ randomize_rotation_matrix.T  # Rotate the mesh randomly
+            # If user enabled yaw randomization, rotate the mesh randomly around the z-axis (between 1 to 359 degrees)
+            if yaw_mode is True:
+                random_yaw = np.random.uniform(np.deg2rad(1), np.deg2rad(359))
 
-            random_x = np.random.uniform(0, box_width)
-            random_y = np.random.uniform(0, box_height)
+                rotation_matrix = np.array([
+                    [np.cos(random_yaw), -np.sin(random_yaw), 0],
+                    [np.sin(random_yaw),  np.cos(random_yaw), 0],
+                    [0, 0, 1]
+                ])
+                
+                cad_mesh_vertices = cad_mesh_vertices @ rotation_matrix.T
+
+            # Calculate the bounds of the rotated mesh to ensure it doesn't fall outside the bounding box
+            min_bounds = cad_mesh_vertices.min(axis=0)
+            max_bounds = cad_mesh_vertices.max(axis=0)
+            mesh_width = max_bounds[0] - min_bounds[0]
+            mesh_height = max_bounds[1] - min_bounds[1]
+
+            # Ensure the mesh fits within the bounding box
+            valid_x_range = (0 - min_bounds[0], box_width - max_bounds[0])
+            valid_y_range = (0 - min_bounds[1], box_height - max_bounds[1])
+
+            random_x = np.random.uniform(*valid_x_range)
+            random_y = np.random.uniform(*valid_y_range)
 
             # Move the CAD mesh by the width and height
             cad_mesh_vertices[:, 0] += random_x  # Move X by box width
@@ -547,7 +398,7 @@ while cap.isOpened():
 
             # Update mesh with new position
             cad_mesh.vertices = o3d.utility.Vector3dVector(cad_mesh_vertices)
-            print(f"Moved CAD mesh to new location: {np.mean(np.asarray(cad_mesh.vertices), axis=0)}")
+            #print(f"Moved CAD mesh to new location: {np.mean(np.asarray(cad_mesh.vertices), axis=0)}")
 
             # Record info (where the randomized positions are) into a .csv file
             store_center = np.mean(np.asarray(cad_mesh.vertices), axis=0)
@@ -556,52 +407,16 @@ while cap.isOpened():
             print("The bounding box size is too small to fit the object.")
 
     # Press '-' to scale mesh down
-    elif key == ord('-') and key_pressed != '-':
-        adjusted_scaling -= 0.05
-        #adjusted_scaling = max(0.001, adjusted_scaling)
-        key_pressed = '-'
-        print(f"Adjusted scaling: {adjusted_scaling}")
+    elif key == ord('-'):
+        cad_mesh.scale(0.8, cad_mesh.get_center())
+        adjusted_scaling *= 0.8
+        print(f"Adjusted scaling: {round(adjusted_scaling, 2)}")
 
     # Press '=' to scale mesh up
-    elif key == ord('=') and key_pressed != '=':
-        adjusted_scaling += 0.05
-        #adjusted_scaling = min(10, adjusted_scaling)
-        key_pressed = '='
-        print(f"Adjusted scaling: {adjusted_scaling}")
-
-    # Press '[' to rotate mesh on the same face
-    elif key == ord('['):
-        cad_mesh.center = np.mean(np.asarray(cad_mesh.vertices), axis=0)
-        box_rotation_matrix = np.array([
-            [-1, 0, 0],
-            [0,  -1, 0],
-            [0,  0, 1]
-        ], dtype=np.float32)
-        box_3d = box_3d @ box_rotation_matrix.T
-
-    # Press ']' to rotate mesh on the same face
-    elif key == ord(']'):
-        cad_mesh.center = np.mean(np.asarray(cad_mesh.vertices), axis=0)
-        box_rotation_matrix = np.array([
-            [-1, 0, 0],
-            [0,  -1, 0],
-            [0,  0, 1]
-        ], dtype=np.float32)
-        box_3d = box_3d @ box_rotation_matrix.T
-
-    # Press 'f' to rotate mesh between all its "faces"
-    elif key == ord('f'):
-        cad_mesh.center = np.mean(np.asarray(cad_mesh.vertices), axis=0)
-        box_rotation_matrix = np.array([
-            [-1, 0, 0],
-            [0,  -1, 0],
-            [0,  0, 1]
-        ], dtype=np.float32)
-        box_3d = box_3d @ box_rotation_matrix.T
-        
-    # If the key is released, reset key_pressed
-    elif key == 255:  # No key pressed
-        key_pressed = None
+    elif key == ord('='):
+        cad_mesh.scale(1.2, cad_mesh.get_center())
+        adjusted_scaling *= 1.2
+        print(f"Adjusted scaling: {round(adjusted_scaling, 2)}")
 
     # Press 'q' to exit
     elif key == ord('q'):  
