@@ -1,4 +1,4 @@
-# rand-init
+# RandInit
 This task initialization randomizer GUI tool displays CAD meshes of the object(s) on a specified work plane and allows the user to randomize the location of the mesh based on specified parameters. The locations are stored in a `.csv` file.
 <center>
   
@@ -10,7 +10,7 @@ Given the following inputs from the user:
 - cad meshes of the objects,
 - a tag on the plane of interest
   
-The pipeline creates segmentation masks based on the user's labels and outputs the data as a binary .npy file, where each pixel value represents either the background (0) or the object (1). This information can be used to randomize backgrounds, enhancing a model's ability to generalize across diverse scenarios and improving its robustness to environmental variations.
+This tool allows operators to randomize the starting positions of objects in a robot training task, increasing data collection efficiency and removing any human error and positional bias that might arise from this process. The tool stores the real-life coordinates of the object's positions (in relation to the tag), which can be used for future analysis or pipelines. This tool aims to increase a model's generalizability across various scenarios and improve its robustness to environmental variations.
 
 # Installation
 1. Clone the repository:
@@ -23,30 +23,30 @@ conda env create -f environment.yml
 conda activate randinit
 ```
 
-# Pipeline tutorial
-1. Edit the example `labels.json` file with your list of object descriptions. 
+# After the inputs are provided and the environment is installed, please view the pipeline tutorial below. 
 
-   - For example, "small white ceramic mug."
-2. Upload your image(s) into the `images` folder.
-3. Run pipeline using:
+# Pipeline tutorial
+Run the tool using:
 ```
-python run_seg_to_binary.py
+python rand_init_tool.py
 ```
-4. The pipeline will write 2 files:
-```
-/example_dir/output
-    ├── output_images/img#_detections.png                     
-    ├── output_binary/img#_mask.npy       
-```
-5. Optional: Use `check.ipynb` to visualize  `img#_mask.npy` binary file.
+
+1. Press 't' to toggle drawing mode to draw a box.
+2. Specify your working plane by using your mouse to drag a box starting from the April Tag. Your specified bounding box will appear as a green box.
+3. Press 'c' to confirm your box.
+
+4. Press 'p' to project your CAD mesh into the plane.
+5. Press '-' or '=' to adjust the scaling of your mesh in the camera frame.
+
+6. Press 'r' to randomize the location of your mesh in the plane. Each time you press 'r', the location will be randomized again, and the new location (3D pose with respect to the camera) will be stored in the 'mesh_positions.csv' file.
+7. For more variation, press 'y' to toggle on the yaw-rotation parameter for randomization.
+8. Press 'q' to quit the program.
 
 # Directory structure
 ```
 /example_dir/
-    ├── run_seg_to_binary.py        # Main script
-    ├── labels.json                 # (Input) File containing object labels/descriptions
-    ├── meshes/                     # (Input) Folder containing '.ply' meshes
-    ├── output/                     # (Output) Folder to store output files
-        ├── output_images/          # (Output) Folder to store output images with seg masks
-        ├── output_binary/          # (Output) Folder to store output '.npy' binary files of seg masks
+    ├── rand_init_tool.py            # Main script
+    ├── camera_intrinsics.json       # (Input) File containing camera intrinsics/parameters
+    ├── meshes/                      # (Input) Folder containing '.ply' meshes
+    ├── mesh_positions.csv           # (Output) Folder to store mesh locations
 ```
