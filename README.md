@@ -1,5 +1,5 @@
 # rand-init
-This task initialization randomizer GUI tool takes CAD meshes, displays the object placements on the work plane, and outputs locations in a `.csv` file.
+This task initialization randomizer GUI tool displays CAD meshes of the object(s) on a specified work plane and allows the user to randomize the location of the mesh based on specified parameters. The locations are stored in a `.csv` file.
 <center>
   
 </center>
@@ -20,7 +20,7 @@ git clone https://github.com/hlenwng/rand-init.git
 2. Install dependencies with conda:
 ```
 conda env create -f environment.yml
-conda activate rand-init
+conda activate randinit
 ```
 
 # Pipeline tutorial
