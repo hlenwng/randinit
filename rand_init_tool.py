@@ -7,7 +7,9 @@ import time
 import csv
 import os
 from datetime import datetime
-from scipy.spatial import cKDTree
+import random
+import mss
+import pandas as pd
 
 '''
 Values needed by user:
@@ -19,8 +21,8 @@ Values needed by user:
 # Load CAD mesh using Open3D
 mesh_name = 'leg_cad'
 cad_mesh = o3d.io.read_triangle_mesh(f'/Users/helenwang/helen_lars/meshes/{mesh_name}.ply')
-#cad_mesh = cad_mesh.subdivide_midpoint(number_of_iterations=1)  # Increase iterations for a more detailed mesh
-cad_mesh = cad_mesh.simplify_quadric_decimation(target_number_of_triangles=500)  # Simplify the mesh for faster rendering
+cad_mesh = cad_mesh.subdivide_midpoint(number_of_iterations=1)  # Increase iterations for a more detailed mesh
+#cad_mesh = cad_mesh.simplify_quadric_decimation(target_number_of_triangles=500)  # Simplify the mesh for faster rendering
 cad_mesh.compute_vertex_normals()
 
 csv_filename = 'mesh_positions.csv'
@@ -28,6 +30,18 @@ if not os.path.isfile(csv_filename):
     with open(csv_filename, mode='w', newline='') as file:
         writer = csv.writer(file)
         writer.writerow(['mesh_name', 'x', 'y', 'z', 'time']) 
+
+# Initialize the session number at the start of the program
+SESSION_FILE = "session_tracker.txt"
+if os.path.exists(SESSION_FILE):
+    with open(SESSION_FILE, 'r') as file:
+        current_session_number = int(file.read().strip()) + 1
+else:
+    current_session_number = 1
+
+# Save the updated session number to the file
+with open(SESSION_FILE, 'w') as file:
+    file.write(str(current_session_number))
 
 # Store IRL coordinates of tag corners
 tag_size = 0.06  # 6cm square
@@ -80,6 +94,9 @@ drawing = False  # True if mouse is pressed
 ix, iy = -1, -1  # Initial position of box
 final_box_coords = None  # Final box coordinates after button click
 saved_box_coords = None  # To store the blue box coordinates after pressing 'c'
+box_initialized = False # To check if the strata grid has been initialized
+grid_indices = None # To store the randomized strata grid indices
+n_x, n_y = 7, 7 # Size of strata grid (how "random")
 
 cad_mesh_vertices = None  # To store projected vertices of the CAD mesh
 adjusted_scaling = 1.25  # To fine-tune the scaling of displayed mesh
@@ -186,6 +203,23 @@ def save_position_to_csv(position, filename, mesh_name):
         writer = csv.writer(file)
         writer.writerow([mesh_name, *position, current_time])
 
+def csv_strata(strata_x, strata_y, filename):
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Prepare the new data
+    new_data = pd.DataFrame({
+        'Session': [current_session_number],
+        'Strata_x': [strata_x],
+        'Strata_y': [strata_y],
+        'Time': [current_time]
+    })
+
+    # Append to the CSV file
+    if os.path.exists(filename):
+        new_data.to_csv(filename, mode='a', header=False, index=False)
+    else:
+        new_data.to_csv(filename, index=False)
+
 def check_size(cad_mesh, box_width, box_height):
     cad_mesh_vertices = np.asarray(cad_mesh.vertices)
     mesh_x = np.max(cad_mesh_vertices[:, 0]) - np.min(cad_mesh_vertices[:, 0])
@@ -200,8 +234,8 @@ def check_size(cad_mesh, box_width, box_height):
     return True
 
 # Create window
-cv2.namedWindow('April Tag Detection', cv2.WINDOW_GUI_EXPANDED)
-cv2.setMouseCallback('April Tag Detection', draw_box)
+cv2.namedWindow('Rand Init Tool', cv2.WINDOW_GUI_EXPANDED)
+cv2.setMouseCallback('Rand Init Tool', draw_box)
 start_time = time.time()
 
 # Open camera
@@ -240,8 +274,6 @@ while cap.isOpened():
             '''
             Draw user-defined box that defines the working plane
             '''
-
-            projected_center = project_and_print_center(cad_mesh, camera_matrix, dist_coeffs)
 
             # Convert saved box (2D) into a 3D box relative to the tag (pixel units)
             box_width = (saved_box_coords[1][0] - saved_box_coords[0][0]) / 1000.0  # Scale to meters
@@ -286,18 +318,17 @@ while cap.isOpened():
                     cv2.line(frame, tuple(map(int, vertex[:2])), tuple(map(int, next_vertex[:2])), (0, 0, 255), thickness=2)  # Draw red edges
 
             # Display the final frame
-            cv2.imshow('April Tag Detection', frame)
+            cv2.imshow('Rand Init Tool', frame)
 
     # Display the currently drawn rectangle if coordinates are set
     if final_box_coords is not None and final_box_coords[0] != final_box_coords[1]:
         cv2.rectangle(frame, final_box_coords[0], final_box_coords[1], (0, 255, 0), 2)
 
     # Show the frame with AprilTags and the drawn box
-    cv2.imshow('April Tag Detection', frame)
+    cv2.imshow('Rand Init Tool', frame)
 
     '''
     Check for key presses that trigger actions
-    Eventually, convert these to buttons within the GUI interface
     '''
 
     # Press 't' to toggle drawing mode
@@ -311,9 +342,11 @@ while cap.isOpened():
         final_box_coords = None  # Clear the current box to hide it
         print(f"Saved drawn bounding box coordinates: {saved_box_coords}")
         
+        box_initialized = False
+        
     # Press 'p' to project the CAD mesh in camera frame
     elif key == ord('p') and saved_box_coords is not None:  
-        project_and_print_center(cad_mesh, camera_matrix, dist_coeffs)
+        #project_and_print_center(cad_mesh, camera_matrix, dist_coeffs)
 
         cad_mesh_vertices = np.asarray(cad_mesh.vertices)
 
@@ -359,53 +392,78 @@ while cap.isOpened():
 
     # Press 'r' to randomize mesh location and store location information
     elif key == ord('r') and saved_box_coords:
-
         if check_size(cad_mesh, box_width, box_height):
+
+            if not box_initialized:
+                # Create and randomize strata grid
+                grid_indices = [(row, col) for row in range(n_x) for col in range(n_y)]  # n_x*n_y grid
+                np.random.shuffle(grid_indices)
+                box_initialized = True
 
             # Reset CAD mesh to the initial position (0, 0, 0)
             cad_mesh_vertices = np.asarray(cad_mesh.vertices)
             cad_center = np.mean(cad_mesh_vertices, axis=0)  # Get the current center of the mesh
             cad_mesh_vertices -= cad_center  # Reset mesh to 0, 0, 0 by shifting its center to origin
 
-            # If user enabled yaw randomization, rotate the mesh randomly around the z-axis (between 1 to 359 degrees)
-            if yaw_mode is True:
+            # If user enabled yaw randomization, rotate the mesh randomly around the z-axis
+            if yaw_mode:
                 random_yaw = np.random.uniform(np.deg2rad(1), np.deg2rad(359))
-
                 rotation_matrix = np.array([
                     [np.cos(random_yaw), -np.sin(random_yaw), 0],
                     [np.sin(random_yaw),  np.cos(random_yaw), 0],
                     [0, 0, 1]
                 ])
-                
                 cad_mesh_vertices = cad_mesh_vertices @ rotation_matrix.T
 
-            # Calculate the bounds of the rotated mesh to ensure it doesn't fall outside the bounding box
+            # Grid parameters
+            stratum_width = box_width / n_x
+            stratum_height = box_height / n_y
+
+            # Select a random grid index (and remove from list)
+            if grid_indices:
+                selected_row, selected_col = grid_indices.pop()
+                #print(f"Selected stratum: ({selected_row}, {selected_col})")
+            else:
+                # Reset grid if all strata have been selected
+                print("All strata have been used. Resetting grid.")
+                box_initialized = False
+                continue
+
+            # Determine current stratum bounds
+            stratum_min_x = selected_col * stratum_width
+            stratum_max_x = stratum_min_x + stratum_width
+            stratum_min_y = selected_row * stratum_height
+            stratum_max_y = stratum_min_y + stratum_height
+
+            # Check mesh fits in stratum
             min_bounds = cad_mesh_vertices.min(axis=0)
             max_bounds = cad_mesh_vertices.max(axis=0)
             mesh_width = max_bounds[0] - min_bounds[0]
             mesh_height = max_bounds[1] - min_bounds[1]
 
-            # Ensure the mesh fits within the bounding box
-            valid_x_range = (0 - min_bounds[0], box_width - max_bounds[0])
-            valid_y_range = (0 - min_bounds[1], box_height - max_bounds[1])
+            # Calculate random position within the stratum
+            random_x = np.random.uniform(stratum_min_x, stratum_max_x - mesh_width) - min_bounds[0]
+            random_y = np.random.uniform(stratum_min_y, stratum_max_y - mesh_height) - min_bounds[1]
+            #print(f"Randomized position: ({random_x}, {random_y})")
 
-            random_x = np.random.uniform(*valid_x_range)
-            random_y = np.random.uniform(*valid_y_range)
-
-            # Move the CAD mesh by the width and height
-            cad_mesh_vertices[:, 0] += random_x  # Move X by box width
-            cad_mesh_vertices[:, 1] += random_y  # Move Y by box height
-
-            # Update mesh with new position
+            # Translate and update the mesh
+            cad_mesh_vertices[:, 0] += random_x
+            cad_mesh_vertices[:, 1] += random_y
             cad_mesh.vertices = o3d.utility.Vector3dVector(cad_mesh_vertices)
-            #print(f"Moved CAD mesh to new location: {np.mean(np.asarray(cad_mesh.vertices), axis=0)}")
 
-            # Record info (where the randomized positions are) into a .csv file
+            # Take a screenshot of the randomized mesh (for testing purposes)
+            # timestamp = time.strftime("%Y%m%d-%H%M%S")
+            # with mss.mss() as sct:
+            #     screenshot = sct.shot(output=f'/Users/helenwang/downloads/randinit_{timestamp}.png')
+
+            # Record and save position
             store_center = np.mean(np.asarray(cad_mesh.vertices), axis=0)
             save_position_to_csv(store_center, csv_filename, mesh_name)
+            csv_strata(selected_row, selected_col, "strata.csv")
+
         else:
             print("The bounding box size is too small to fit the object.")
-
+        
     # Press '-' to scale mesh down
     elif key == ord('-'):
         cad_mesh.scale(0.8, cad_mesh.get_center())
