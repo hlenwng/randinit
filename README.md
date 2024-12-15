@@ -1,7 +1,7 @@
 # RandInit
 This task initialization randomizer GUI tool displays CAD meshes of the object(s) on a specified work plane and allows the user to randomize the location of the mesh based on specified parameters. The locations are stored in a `.csv` file.
 <center>
-  
+  <img width="1320" alt="Screenshot 2024-12-15 at 10 47 25 AM" src="https://github.com/user-attachments/assets/cbc1b602-79f7-441d-a106-f6833a4a53d3" />
 </center>
 
 # Overview
