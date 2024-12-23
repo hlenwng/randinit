@@ -31,16 +31,18 @@ Run the tool using:
 python rand_init_tool.py
 ```
 
-1. Press 't' to toggle drawing mode to draw a box.
-2. Specify your working plane by using your mouse to drag a box starting from the April Tag. Your specified bounding box will appear as a green box.
-3. Press 'c' to confirm your box.
+1. When prompted in the terminal, enter the estimated number of demonstrations that will be run (or leave blank if unsure). An algorithm will calculate the optimal grid size given your input.
 
-4. Press 'p' to project your CAD mesh into the plane.
-5. Press '-' or '=' to adjust the scaling of your mesh in the camera frame.
+2. Press 't' to toggle drawing mode to draw a box.
+3. Specify your working plane by using your mouse to drag a box starting from the April Tag. Your specified bounding box will appear as a green box.
+4. Press 'c' to confirm your box.
 
-6. Press 'r' to randomize the location of your mesh in the plane. Each time you press 'r', the location will be randomized again, and the new location (3D pose with respect to the camera) will be stored in the 'mesh_positions.csv' file.
-7. For more variation, press 'y' to toggle on the yaw-rotation parameter for randomization.
-8. Press 'q' to quit the program.
+5. Press 'p' to project your CAD mesh into the plane.
+6. Press '-' or '=' to adjust the scaling of your mesh in the camera frame.
+
+7. Press 'r' to randomize the location of your mesh in the plane. Each time you press 'r', the location will be randomized again, and the new location (3D pose with respect to the camera) will be stored in the 'mesh_positions.csv' file.
+8. For more variation, press 'y' to toggle on the yaw-rotation parameter for randomization.
+9. Press 'q' to quit the program.
 
 # Directory structure
 ```
