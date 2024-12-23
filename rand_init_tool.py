@@ -233,6 +233,33 @@ def check_size(cad_mesh, box_width, box_height):
     
     return True
 
+def calculate_grid_size(demonstrations, default_nx=7, default_ny=7):
+    # Calculate the optimal grid size (n_x, n_y) based on the given number of demonstrations
+    
+    if demonstrations is None or demonstrations <= 0:
+        return default_nx, default_ny
+
+    # Take the square root as the starting point
+    optimal_size = int(demonstrations ** 0.5)
+
+    # Adjust to ensure the product is close to demonstrations
+    n_x = optimal_size
+    n_y = (demonstrations + n_x - 1) // n_x 
+
+    # Ensure n_x * n_y >= demonstrations
+    while n_x * n_y < demonstrations:
+        if n_x <= n_y:
+            n_x += 1
+        else:
+            n_y += 1
+
+    return n_x, n_y
+
+# Calculate optimal grid size given number of demonstrations from user
+user_demonstrations = int(input("Enter the number of demonstrations (or leave blank for default): ") or 0)
+n_x, n_y = calculate_grid_size(user_demonstrations)
+print(f"Calculated grid size: n_x={n_x}, n_y={n_y}")
+
 # Create window
 cv2.namedWindow('Rand Init Tool', cv2.WINDOW_GUI_EXPANDED)
 cv2.setMouseCallback('Rand Init Tool', draw_box)
