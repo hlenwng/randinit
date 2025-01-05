@@ -52,3 +52,6 @@ python rand_init_tool.py
     ├── meshes/                      # (Input) Folder containing '.ply' meshes
     ├── mesh_positions.csv           # (Output) Folder to store mesh locations
 ```
+
+# References
+This project includes code adapted from Grounded SAM: Ren, Tianhe, et al. "Grounded sam: Assembling open-world models for diverse visual tasks." arXiv preprint arXiv:2401.14159 (2024). 
